@@ -1,0 +1,3 @@
+LIBRARY   ${plugin_target_name}
+EXPORTS
+  llvmGetPassPluginInfo @1
