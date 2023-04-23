@@ -1,7 +1,9 @@
 #include <windows-gpt-transform/windows-gpt-transform.h>
 
+#include <string>
 #include <vector>
 
+#include <llvm/ADT/SetVector.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
@@ -16,29 +18,37 @@ llvm::PreservedAnalyses jvs::WindowsGPTPass::run(
   llvm::Module& m, llvm::ModuleAnalysisManager& am)
 {
   bool modified = false;
-  for (llvm::Function& f : m)
+  llvm::SetVector<llvm::GlobalVariable*> stringGlobals;
+  // Iterate over all the global variables in the program and find the ones which are
+  // C strings.
+  for (llvm::GlobalVariable& gv : m.globals())
   {
-    if (f.getName() != "main")
+    if (!gv.isConstant() || !gv.hasInitializer())
     {
       continue;
     }
 
-    for (llvm::Instruction& inst : llvm::instructions(f))
+    if (auto* cda = llvm::dyn_cast<llvm::ConstantDataArray>(gv.getInitializer()))
     {
-      for (auto& op : inst.operands())
+      if (cda->isCString())
       {
-        if (auto* intVal = llvm::dyn_cast<llvm::ConstantInt>(op))
-        {
-          if (intVal->isOne())
-          {
-            // Change the 1 to a 0.
-            auto* zeroVal = llvm::ConstantInt::get(intVal->getType(), 0);
-            inst.setOperand(op.getOperandNo(), zeroVal);
-            modified = true;
-          }
-        }
+        stringGlobals.insert(&gv);
       }
     }
+  }
+
+  while (!stringGlobals.empty())
+  {
+    llvm::GlobalVariable* gv = stringGlobals.pop_back_val();
+    auto* cda = llvm::cast<llvm::ConstantDataArray>(gv->getInitializer());
+    std::string s = cda->getAsCString().str();
+    std::reverse(s.begin(), s.end());
+    auto* reversedStrConst = llvm::ConstantDataArray::getString(m.getContext(), s);
+    auto* reversedGV = new llvm::GlobalVariable(m, gv->getValueType(), /*isConstant*/ true,
+      gv->getLinkage(), reversedStrConst, gv->getName() + ".rev");
+    modified = true;
+    gv->replaceAllUsesWith(reversedGV);
+    gv->eraseFromParent();
   }
 
   if (!modified)
